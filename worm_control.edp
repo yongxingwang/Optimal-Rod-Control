@@ -1,0 +1,573 @@
+load "msh3"
+load "Curvature"
+load "isoline"
+load "iovtk"
+verbosity=0;
+string outputGID = "outputGID/";
+string outputVTK = "outputVTK/";
+
+
+int Ns=128, NN=1001, saveEach = 1, iteration=0;
+real dt=0.04;
+
+////////////////////////////////////////////////////////
+// For visualisation the curvature
+mesh Th2=square(NN-1,Ns-1,[(NN-1)*x,(Ns-1)*y]);
+//plot(Th2,wait=0);
+fespace Vh2(Th2,P1);
+Vh2 w1=0,w2=0,w3=0,wm=0,eu=0,al1=0,al2=0,al3=0;
+////////////////////////////////////////////////////
+
+real Es=1.1e5, nu=0.4, Gs=Es/(1+nu)/2, ks=4./3, L=1.e-3;
+real err0, err1, obj, objf, objl, objomega, objkurvature, objd3=0;
+
+real r=L/40, As=pi*r*r, L0=0, alpha0=0, beta0=0, gamma0=0;
+real K11=ks*Gs*As, K22=ks*Gs*As, K33=Es*As;
+real J11=Es*As^2/4/pi, J22=Es*As^2/4/pi, J33=Gs*As^2/2/pi;
+
+/////////////////////////////////////////////////////////////
+real lam0=1.e9;
+real lamf=1.e0, laml=1.e-6; 
+real lamz=0, lamd=1.e-6;
+real lama1=1.e-12, lama2=1.e-12, lama3=1.e-12;
+real lamk1=1.e-20, lamk2=1.e-20, lamk3=1.e-18;
+//////////////////////////////////////////////////////////////
+
+real[int] x0(Ns),y0(Ns),z0(Ns),s0(Ns);
+int[int] nn(Ns-1);
+
+ifstream file("DataFreeFem/rod0.dat");
+
+for (int i=0;i<Ns;i++) file >> x0[i] >> y0[i]>> z0[i];
+
+for (int i=0;i<Ns;i++){
+	x0[i] *= 1.e-3;
+	y0[i] *= 1.e-3;
+	z0[i] *= 1.e-3;
+}
+s0[0]=0; L0=0;
+for (int i=1;i<Ns;i++){
+	nn[i-1]=1;
+	s0[i] = s0[i-1] + dist(x0[i]-x0[i-1], y0[i]-y0[i-1], z0[i]-z0[i-1] );
+	L0 += dist(x0[i]-x0[i-1], y0[i]-y0[i-1], z0[i]-z0[i-1] );
+	//cout<<s0[i]<<endl;
+}
+cout<<"L0==========="<<L0<<endl;
+//for (int i=0;i<Ns;i++) cout<<i<<"=="<< x0[i] <<","<<y0[i]<<","<<z0[i]<<endl;
+border D(t=0,1;i){
+	if(i<Ns-1){
+		x = x0[i]*(1-t) + x0[i+1]*t; 
+		y = y0[i]*(1-t) + y0[i+1]*t;
+		z = z0[i]*(1-t) + z0[i+1]*t;
+	}
+	if (i==Ns-2) label=1000;
+}
+plot(D(nn),wait=1,dim=3);
+meshL Th=buildmeshL(D(nn));
+meshL Thp = Th;
+plot(Th,wait=1);
+
+/*
+cout<<"NO. of nodes =="<<Th.nv<<endl;
+for(int i=0; i<Th.nv; i++){
+	cout<<i<<"==label=="<<Th(i).label<<endl;
+}
+*/
+func Pk=P1;
+fespace Vh(Th,Pk);
+fespace Vhp(Thp,Pk);
+fespace Rh(Th,[Pk,Pk,Pk]);
+fespace RRh(Th,[Pk,Pk,Pk,Pk,Pk,Pk,Pk,Pk,Pk,Pk,Pk,Pk]);
+fespace Rhp(Thp,[Pk,Pk,Pk]);
+
+Vh tempx,tempy,tempz;
+Vh tempa,tempb,tempc;
+Vh sref, inversej=1.; 
+Vh d3a=0;
+Vhp srefp;
+for(int i=0; i<sref[].n; i++) sref[][i]=s0[i];;
+
+
+Rh [ugx,ugy,ugz];
+Rh [ux,uy,uz]=[0,0,0], [ukx,uky,ukz]=[0,0,0], [uhx,uhy,uhz]=[0,0,0];
+Rh [ax,ay,az]=[0,0,0], [akx,aky,akz]=[0,0,0], [ahx,ahy,ahz]=[0,0,0];
+Rh [anx,any,anz]=[0,0,0];
+Rh [qx,qy,qz], [wx,wy,wz], [whx,why,whz], [alx,aly,alz], [alhx,alhy,alhz],[fx,fy,fz],[lx,ly,lz];
+
+Rhp [ugpx,ugpy,ugpz];
+Rhp [upx,upy,upz], [ukpx,ukpy,ukpz], [uhpx,uhpy,uhpz];
+Rhp [apx,apy,apz], [akpx,akpy,akpz], [ahpx,ahpy,ahpz];
+Rhp [anpx,anpy,anpz];
+
+macro Q(a) [[cos(a#x)*cos(a#z)-sin(a#x)*sin(a#y)*sin(a#z), -sin(a#x)*cos(a#y), cos(a#x)*sin(a#z)+sin(a#x)*sin(a#y)*cos(a#z)],
+		    [sin(a#x)*cos(a#z)+cos(a#x)*sin(a#y)*sin(a#z),  cos(a#x)*cos(a#y), sin(a#x)*sin(a#z)-cos(a#x)*sin(a#y)*cos(a#z)],
+		    [-cos(a#y)*sin(a#z), sin(a#y), cos(a#y)*cos(a#z)]]//
+
+macro q1(a) [cos(a#x)*cos(a#z)-sin(a#x)*sin(a#y)*sin(a#z), -sin(a#x)*cos(a#y), cos(a#x)*sin(a#z)+sin(a#x)*sin(a#y)*cos(a#z)] //
+macro q2(a) [sin(a#x)*cos(a#z)+cos(a#x)*sin(a#y)*sin(a#z),  cos(a#x)*cos(a#y), sin(a#x)*sin(a#z)-cos(a#x)*sin(a#y)*cos(a#z)] //
+macro q3(a) [-cos(a#y)*sin(a#z), sin(a#y), cos(a#y)*cos(a#z)]//
+macro D1q3(a,b) (b#y*[sin(a#y)*sin(a#z), cos(a#y), -sin(a#y)*cos(a#z)])//
+macro D2q3(a,b) (b#z*[-cos(a#y)*cos(a#z), 0, -cos(a#y)*sin(a#z)]) //
+
+macro A(a) [[ 0,  -cos(a#x), sin(a#x)*cos(a#y)],
+		    [ 0,  -sin(a#x), -cos(a#x)*cos(a#y)],
+		    [-1,   0,        -sin(a#y)        ]]//
+
+macro ds(u) (dx(u)*Tl.x+dy(u)*Tl.y+dz(u)*Tl.z) //
+
+macro B(u) [[ 0,       -ds(u#z),  ds(u#y)],
+		    [ ds(u#z),  0,       -ds(u#x)],
+	        [-ds(u#y),  ds(u#x),  0     ]]//
+			
+macro grad(u) [ds(u#x),ds(u#y),ds(u#z)]//
+macro vect(u) [u#x,u#y,u#z]//			
+	
+macro LAMK [[0,0,lamk1],[0,0,lamk2],[0,0,lamk3]] //	
+macro LAMA [[0,0,lama1],[0,0,lama2],[0,0,lama3]] //	
+macro K0 [[K11,0,0],[0,K22,0],[0,0,K33]] //	
+macro K(ij) [[K11*ij,0,0 ],[0,K22*ij,0],[0,0,K33*ij]]//
+macro Kn33(ij) (K33*ij) //
+macro J(ij) [[J11*ij*ij,0,0 ],[0,J22*ij*ij,0],[0,0,J33*ij*ij ]]//
+
+varf Stiff0([ux,uy,uz,ax,ay,az,uhx,uhy,uhz,ahx,ahy,ahz],[dux,duy,duz,dax,day,daz,duhx,duhy,duhz,dahx,dahy,dahz])=
+	int1d(Th)(grad(duh)'*Q(ak)'*K0*Q(ak)*grad(u)
+	+ grad(dah)'*Q(ak)'*J(inversej)*A(ak)*grad(a)
+	+ grad(uh)'*Q(ak)'*K0*Q(ak)*grad(du)
+	+ grad(ah)'*Q(ak)'*J(inversej)*A(ak)*grad(da)
+	- vect(ah)'*B(uk)*Q(ak)'*K0*Q(ak)*grad(du)
+	- vect(dah)'*B(uk)*Q(ak)'*K0*Q(ak)*grad(u)
+	+ lam0*vect(du)'*vect(u)
+	+ grad(da)'*A(ak)'*LAMK*A(ak)*grad(a)
+	- vect(duh)'*vect(uh)/lamf
+	- vect(dah)'*vect(ah)/laml
+	+ lamd*grad(du)'*grad(u)
+	- lamd*grad(du)'*D1q3(ak,a)
+	- lamd*grad(du)'*D2q3(ak,a)
+	+ lamd*D1q3(ak,da)'*grad(u)
+	+ lamd*D2q3(ak,da)'*grad(u)
+	- lamd*D1q3(ak,da)'*D1q3(ak,a)
+	- lamd*D1q3(ak,da)'*D2q3(ak,a)
+	- lamd*D2q3(ak,da)'*D1q3(ak,a)
+	- lamd*D2q3(ak,da)'*D2q3(ak,a)
+	+ lamz*ds(dax)*ds(ax)
+	+ lamz*ds(dax)*ds(az)*sin(aky)
+	+ lamz*ds(daz)*ds(ax)*sin(aky)
+	+ lamz*ds(daz)*ds(az)*sin(aky)^2
+	+ lamz*day*ds(ax)*cos(aky)*ds(akz)
+	+ lamz*day*ds(az)*sin(aky)*cos(aky)*ds(akz)
+	)
+	+ on(1,ux=x0[0],uy=y0[0],uz=z0[0],uhx=0,uhy=0,uhz=0)
+	+ on(1,ax=0,ahx=0)
+	+ on(1000,ux=x0[Ns-1],uy=y0[Ns-1],uz=z0[Ns-1],uhx=0,uhy=0,uhz=0);
+
+varf Force0([ux,uy,uz,ax,ay,az,uhx,uhy,uhz,ahx,ahy,ahz],[dux,duy,duz,dax,day,daz,duhx,duhy,duhz,dahx,dahy,dahz]) =
+	int1d(Th)(lam0*vect(du)'*vect(ug)
+	+ Kn33(inversej)*grad(duh)'*q3(ak)
+	- Kn33(inversej)*vect(dah)'*B(uk)*q3(ak)
+	+ lamd*grad(du)'*q3(ak)
+	- lamd*grad(du)'*D1q3(ak,ak)
+	- lamd*grad(du)'*D2q3(ak,ak)
+	+ lamd*D1q3(ak,da)'*q3(ak)
+	+ lamd*D2q3(ak,da)'*q3(ak)
+	- lamd*D1q3(ak,da)'*D1q3(ak,ak)
+	- lamd*D1q3(ak,da)'*D2q3(ak,ak)
+	- lamd*D2q3(ak,da)'*D1q3(ak,ak)
+	- lamd*D2q3(ak,da)'*D2q3(ak,ak)
+	)
+	+ on(1,ux=x0[0],uy=y0[0],uz=z0[0],uhx=0,uhy=0,uhz=0)
+	+ on(1,ax=0,ahx=0)
+	+ on(1000,ux=x0[Ns-1],uy=y0[Ns-1],uz=z0[Ns-1],uhx=0,uhy=0,uhz=0);
+	
+	
+
+varf Stiff([ux,uy,uz,ax,ay,az,uhx,uhy,uhz,ahx,ahy,ahz],[dux,duy,duz,dax,day,daz,duhx,duhy,duhz,dahx,dahy,dahz])=
+	int1d(Th)(grad(duh)'*Q(ak)'*K0*Q(ak)*grad(u)
+	+ grad(dah)'*Q(ak)'*J(inversej)*A(ak)*grad(a)
+	+ grad(uh)'*Q(ak)'*K0*Q(ak)*grad(du)
+	+ grad(ah)'*Q(ak)'*J(inversej)*A(ak)*grad(da)
+	- vect(ah)'*B(uk)*Q(ak)'*K0*Q(ak)*grad(du)
+	- vect(dah)'*B(uk)*Q(ak)'*K0*Q(ak)*grad(u)
+	+ lam0*vect(du)'*vect(u)
+	+ vect(da)'*A(ak)'*LAMA*A(ak)*vect(a)/dt/dt
+	+ grad(da)'*A(ak)'*LAMK*A(ak)*grad(a)
+	- vect(duh)'*vect(uh)/lamf
+	- vect(dah)'*vect(ah)/laml
+	+ lamd*grad(du)'*grad(u)
+	- lamd*grad(du)'*D1q3(ak,a)
+	- lamd*grad(du)'*D2q3(ak,a)
+	+ lamd*D1q3(ak,da)'*grad(u)
+	+ lamd*D2q3(ak,da)'*grad(u)
+	- lamd*D1q3(ak,da)'*D1q3(ak,a)
+	- lamd*D1q3(ak,da)'*D2q3(ak,a)
+	- lamd*D2q3(ak,da)'*D1q3(ak,a)
+	- lamd*D2q3(ak,da)'*D2q3(ak,a)
+	+ lamz*ds(dax)*ds(ax)
+	+ lamz*ds(dax)*ds(az)*sin(aky)
+	+ lamz*ds(daz)*ds(ax)*sin(aky)
+	+ lamz*ds(daz)*ds(az)*sin(aky)^2
+	+ lamz*day*ds(ax)*cos(aky)*ds(akz)
+	+ lamz*day*ds(az)*sin(aky)*cos(aky)*ds(akz)
+	)
+	+ on(1,ux=x0[0],uy=y0[0],uz=z0[0],uhx=0,uhy=0,uhz=0)
+	+ on(1000,ux=x0[Ns-1],uy=y0[Ns-1],uz=z0[Ns-1],uhx=0,uhy=0,uhz=0);
+
+
+varf Force([ux,uy,uz,ax,ay,az,uhx,uhy,uhz,ahx,ahy,ahz],[dux,duy,duz,dax,day,daz,duhx,duhy,duhz,dahx,dahy,dahz]) =
+	int1d(Th)(lam0*vect(du)'*vect(ug)
+	+ vect(da)'*A(ak)'*LAMA*A(ak)*vect(an)/dt/dt
+	+ Kn33(inversej)*grad(duh)'*q3(ak)
+	- Kn33(inversej)*vect(dah)'*B(uk)*q3(ak)
+	+ lamd*grad(du)'*q3(ak)
+	- lamd*grad(du)'*D1q3(ak,ak)
+	- lamd*grad(du)'*D2q3(ak,ak)
+	+ lamd*D1q3(ak,da)'*q3(ak)
+	+ lamd*D2q3(ak,da)'*q3(ak)
+	- lamd*D1q3(ak,da)'*D1q3(ak,ak)
+	- lamd*D1q3(ak,da)'*D2q3(ak,ak)
+	- lamd*D2q3(ak,da)'*D1q3(ak,ak)
+	- lamd*D2q3(ak,da)'*D2q3(ak,ak)
+	)
+	+ on(1,ux=x0[0],uy=y0[0],uz=z0[0],uhx=0,uhy=0,uhz=0)
+	+ on(1000,ux=x0[Ns-1],uy=y0[Ns-1],uz=z0[Ns-1],uhx=0,uhy=0,uhz=0);
+	
+problem curvature([wx,wy,wz],[whx,why,whz])=
+	int1d(Th)(vect(wh)'*Q(a)'*J(inversej)*vect(w))
+	+ int1d(Th)(Kn33(inversej)*vect(wh)'*B(u)*q3(a)
+	-vect(wh)'*B(u)*Q(a)'*K0*Q(a)*grad(u)
+	);
+
+problem lscurvature([wx,wy,wz],[whx,why,whz])=
+	int1d(Th)(vect(wh)'*vect(w))
+	- int1d(Th)(vect(wh)'*A(a)*grad(a));
+
+problem lsrotation([alx,aly,alz],[alhx,alhy,alhz])=
+	int1d(Th)(grad(alh)'*grad(al))
+	- int1d(Th)(grad(alh)'*vect(w));
+
+
+real[int] F(RRh.ndof);
+RRh [temp1,temp2,temp3,temp4,temp5,temp6,temp7,temp8,temp9,temp10,temp11,temp12]=[0,0,0,0,0,0,0,0,0,0,0,0];
+
+ofstream ff("convergence.txt");
+for(int n=0;n<NN;n++){	
+	cout<<"===Time Step==="<<n<<endl;
+
+	
+	
+	ifstream file("DataFreeFem/rod"+n+".dat");
+
+	for (int i=0;i<Ns;i++) file >> x0[i] >> y0[i]>> z0[i];
+
+	for (int i=0;i<Ns;i++){
+		x0[i] *= 1.e-3;
+		y0[i] *= 1.e-3;
+		z0[i] *= 1.e-3;
+	}
+	
+	for(int i=0; i<tempx[].n; i++){
+		tempx[][i]=x0[i];tempy[][i]=y0[i];tempz[][i]=z0[i];
+	}
+
+	[ugx,ugy,ugz]=[tempx,tempy,tempz];
+	[ukx,uky,ukz]=[ugx,ugy,ugz];
+
+
+	//remesh, rescale K and J
+	if(n>0){		
+
+		Thp=Th;
+		vect(ugp)=vect(ug); srefp=sref;
+		vect(up)=vect(u); vect(ukp)=vect(uk); vect(uhp)=vect(uh);
+		vect(ap)=vect(a); vect(akp)=vect(ak); vect(ahp)=vect(ah);
+		vect(anp)=vect(an);
+		
+		border DD(t=0,1;i){
+			if(i<Ns-1){
+				x = x0[i]*(1-t) + x0[i+1]*t; 
+				y = y0[i]*(1-t) + y0[i+1]*t;
+				z = z0[i]*(1-t) + z0[i+1]*t;
+			}
+			if (i==Ns-2) label=1000;
+		}
+		plot(DD(nn),wait=1,dim=3);
+		meshL Th=buildmeshL(DD(nn));
+		vect(ug)=[0,0,0]; ugx[]=ugpx[]; sref=0; sref[]=srefp[];
+		vect(u)=[0,0,0]; ux[]=upx[]; vect(uk)=[0,0,0]; ukx[]=ukpx[]; vect(uh)=[0,0,0]; uhx[]=uhpx[];
+		vect(a)=[0,0,0]; ax[]=apx[]; vect(ak)=[0,0,0]; akx[]=akpx[]; vect(ah)=[0,0,0]; ahx[]=ahpx[];			
+		vect(an)=[0,0,0]; anx[]=anpx[];
+		
+		inversej=ds(sref);
+		
+		cout<<"label=="<<Th(0).label<<", "<<Th(Th.nv-1).label<<endl;
+	/*
+		for(int i=0; i<inversej[].n; i++) {
+			cout<<"==j=="<<inversej[][i]<<endl;
+		}
+	*/
+	}
+
+
+	for(iteration=1;iteration<=10000;iteration++){	
+		matrix S=Stiff(RRh,RRh);
+		for(int i=0; i<RRh.ndof; i++) F[i]=0.;
+		F=Force(0,RRh);	
+
+		if(n==0){
+			S=Stiff0(RRh,RRh);
+			for(int i=0; i<RRh.ndof; i++) F[i]=0.;
+			F=Force0(0,RRh);			
+		}
+
+		set(S,solver=UMFPACK);
+			
+		temp1[]=0;
+		temp1[] = S^-1 * F;		
+			
+		ux[]=0; vect(u)=[temp1,temp2,temp3];
+		ax[]=0; vect(a)=[temp4,temp5,temp6];	
+		uhx[]=0; vect(uh)=[temp7,temp8,temp9];
+		ahx[]=0; vect(ah)=[temp10,temp11,temp12];		
+			
+		err1=sqrt(int1d(Th)((vect(u)-vect(uk))'*(vect(u)-vect(uk))+(vect(a)-vect(ak))'*(vect(a)-vect(ak))));
+		err0=sqrt(int1d(Th)(vect(uk)'*vect(uk)+vect(ak)'*vect(ak)));
+		
+		obj=sqrt(int1d(Th)((vect(u)-vect(ug))'*(vect(u)-vect(ug))))/sqrt(int1d(Th)(vect(ug)'*vect(ug)));
+		objd3=sqrt(int1d(Th)( (grad(u)-q3(a))'*(grad(u)-q3(a))   ));
+		d3a=(grad(u)-q3(a))'*(grad(u)-q3(a));
+		
+		if(iteration==1) err0=err1;
+		cout<<iteration<<"Errors: "<<err1/err0<<"==="<<obj<<"==="<<objd3<<endl;
+		real relax=0.;
+		vect(uk)=(1-relax)*vect(u)+relax*vect(uk); 
+		vect(ak)=(1-relax)*vect(a)+relax*vect(ak);
+		if (err1/err0 < 1.e-6) break;
+	}
+
+	
+	//vect(w)=A(a)*grad(a);
+	//curvature;
+	lscurvature;
+	lsrotation;
+	tempx=wx;tempy=wy;tempz=wz;
+	tempa=alx;tempb=aly;tempc=alz;
+	//tempa=ux-ugx;tempb=uy-ugy;tempc=uz-ugz;
+
+	
+	for(int j=0; j<tempx[].n; j++){
+		int TNumber = Th2(n,j).nuTriangle;
+		for(int k=0; k<3; k++){
+			if ( abs(Th2[TNumber][k].x - n)<0.1 && abs(Th2[TNumber][k].y - j)<0.1 ){
+				int i=int(Th2[TNumber][k]);
+				w1[][i]=tempx[][j]; w2[][i]=tempy[][j];w3[][i]=tempz[][j];
+				wm[][i]=dist(w1[][i],w2[][i],w3[][i]);
+				al1[][i]=tempa[][j]; al2[][i]=tempb[][j];al3[][i]=tempc[][j];
+				//eu[][i]=dist(tempa[][j], tempb[][j], tempc[][j]);
+			}
+		}
+	}
+	
+	
+	plot(w1,coef=1,fill=1,value=1,wait=0,ps="w1.eps");
+	plot(w2,coef=1,fill=1,value=1,wait=0,ps="w2.eps");
+	plot(w3,coef=1,fill=1,value=1,wait=0,ps="w3.eps");
+	plot(wm,coef=1,fill=1,value=1,wait=0,ps="wm.eps");
+	plot(al1,coef=1,fill=1,value=1,wait=0,ps="al1.eps");
+	plot(al2,coef=1,fill=1,value=1,wait=0,ps="al2.eps");
+	plot(al3,coef=1,fill=1,value=1,wait=0,ps="al3.eps");
+	//plot(eu,coef=1,fill=1,value=1,wait=0,ps="eu.eps");
+
+	obj=sqrt(int1d(Th)((vect(u)-vect(ug))'*(vect(u)-vect(ug))));
+	vect(f)=vect(uh);
+	objf=sqrt(int1d(Th)(vect(f)'*vect(f)))/lamf/lamf;		
+	vect(l)=vect(ah);
+	objl=sqrt(int1d(Th)(vect(l)'*vect(l)))/laml/laml;				
+	objkurvature=sqrt(int1d(Th)(vect(w)'*vect(w)));
+	objomega=sqrt(int1d(Th)((vect(a)-vect(an))'*(vect(a)-vect(an))))/dt/dt;	
+	objd3=sqrt(int1d(Th)( (grad(u)-q3(a))'*(grad(u)-q3(a))   ));	
+	ff<<obj<<"  "<<objf<<"  "<<objl<<"  "<<objkurvature<<"  "<<objomega<<"  "<<objd3<<endl;
+			
+	vect(an)=vect(a);
+	
+	// GID output
+	ofstream f1(outputGID+"/rod"+n+".msh");
+	f1.scientific;
+	f1<<"Mesh \"nbull2\" Dimension 3 Elemtype Linear Nnode 2"<<endl;
+	f1<<"Coordinates"<<endl;
+	/*
+	for(int i=0; i<Th.nv; i++){
+	f1 <<i+1<<"  "<<Th(i).x<<"  "<<Th(i).y<<"  "<<Th(i).z<<endl;
+	}
+	*/
+	tempx=ux;tempy=uy;tempz=uz;
+	for(int i=0; i<tempx[].n; i++){
+		f1<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f1<<"End coordinates"<<endl;
+	f1<< "Elements" << endl;
+	for(int i=0;i<Th.nt;i++){
+		f1 <<i+1<<" ";
+		for(int j=0;j<2;j++){	
+			int k=int(Th[i][j]);
+			f1 << k+1 <<" ";
+		}
+		f1<<"1"<< endl;
+	}
+	f1 << "End elements" << endl;	
+	f1.flush;
+				
+	ofstream f2(outputGID+"/rod"+n+".res");
+	f2.scientific;
+	f2<<" GID Post Results File 1.0"<<endl;
+	f2<<endl;
+	tempx=ux;tempy=uy;tempz=uz;
+	f2<<"Result \"Position\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"u\" \"v\" \"w\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;		
+	tempx=ax;tempy=ay;tempz=az;
+	f2<<"Result \"Rotation\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"alpha\" \"beta\" \"gamma\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;
+	tempx=alx;tempy=aly;tempz=alz;
+	f2<<"Result \"Local Rotation\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"alpha\" \"beta\" \"gamma\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;
+	vect(f)=Q(a)*vect(uh);
+	tempx=fx/lamf;tempy=fy/lamf;tempz=fz/lamf;
+	f2<<"Result \"Control Force\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"fx\" \"fy\" \"fz\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;	
+	vect(l)=Q(a)*vect(ah);	
+	tempx=lx/laml;tempy=ly/laml;tempz=lz/laml;
+	f2<<"Result \"Control Torque\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"lx\" \"ly\" \"lz\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;
+	tempx=wx;tempy=wy;tempz=wz;
+	f2<<"Result \"Curvature\" \"Load Analysis\"  "<<n<<"  Vector OnNodes"<<endl;
+	f2<<"ComponentNames \"kx\" \"ky\" \"kz\" "<<endl;
+	f2<<"Values"<<endl;
+	for(int i=0; i<tempx[].n; i++){
+		f2<<i+1<<" "<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f2<<"end Values"<<endl;	
+	f2.flush;		
+
+
+
+	//VTK output
+	ofstream f3(outputVTK+"rod.vtk."+n);
+	f3.fixed;
+	f3<<"# vtk DataFile Version 2.0"<<endl;
+	f3<<"VTK example"<<endl;
+	f3<<"ASCII"<<endl;
+	f3<<"DATASET UNSTRUCTURED_GRID"<<endl;
+	f3<<"POINTS  "<< Th.nv <<"  float"<<endl;
+	/*
+	for(int i=0; i<Th.nv; i++){
+		f3<<Th(i).x<<"  "<<Th(i).y<<"  "<<Th(i).z<<endl;
+	}		
+	*/
+	tempx=ux;tempy=uy;tempz=uz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"CELLS  "<<Th.nt<<" "<<3*Th.nt<<endl;
+	for(int i=0;i<Th.nt;i++){
+		f3 <<2<<" ";
+		for(int j=0;j<2;j++){	
+			int k=int(Th[i][j]);
+			f3 << k <<" ";
+		}
+		f3<< endl;
+	}
+	f3<<"CELL_TYPES  "<<Th.nt<<endl;	
+	for(int i=0;i<Th.nt;i++) f3<<3<<endl;
+	f3<<"POINT_DATA  "<<Th.nv<<endl;
+	f3<<"VECTORS Position float"<<endl;
+	tempx=ux;tempy=uy;tempz=uz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"VECTORS Rotation float"<<endl;
+	tempx=ax;tempy=ay;tempz=az;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"VECTORS ControlForce float"<<endl;
+	vect(f)=Q(a)*vect(uh);
+	tempx=fx/lamf;tempy=fy/lamf;tempz=fz/lamf;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"VECTORS ControlTorque float"<<endl;
+	tempx=ahx/laml;tempy=ahy/laml;tempz=ahz/laml;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"VECTORS Curvature float"<<endl;
+	tempx=wx;tempy=wy;tempz=wz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}		
+	f3<<"VECTORS LocalRotation float"<<endl;
+	tempx=alx;tempy=aly;tempz=alz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}		
+	f3<<"VECTORS q1 float"<<endl;	
+	[qx,qy,qz]=q1(a);
+	tempx=qx;tempy=qy;tempz=qz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}		
+	f3<<"VECTORS q2 float"<<endl;	
+	[qx,qy,qz]=q2(a);
+	tempx=qx;tempy=qy;tempz=qz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	f3<<"VECTORS q3 float"<<endl;	
+	[qx,qy,qz]=q3(a);
+	tempx=qx;tempy=qy;tempz=qz;
+	for(int i=0; i<tempx[].n; i++){
+		f3<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}		
+
+	// output for restart
+	ofstream f4("restart"+"/rod"+n);
+	f4.scientific;
+	tempx=ux;tempy=uy;tempz=uz;
+	for(int i=0; i<tempx[].n; i++){
+		f4<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+	tempx=ax;tempy=ay;tempz=az;
+	for(int i=0; i<tempx[].n; i++){
+		f4<<tempx[][i]<<" "<<tempy[][i]<<" "<<tempz[][i]<<endl;
+	}
+}
+
+
+int[int] orderOut = [1,1,1,1];
+savevtk("curvature.vtu", Th2, w1, w2, w3, wm, dataname="wx wy wz wm", order=orderOut,append=true);
+
+
+
